@@ -244,12 +244,102 @@ function ThresholdForm({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+function ProviderCard({ provider, activeProviderURL, setActiveProviderURL, fetchData }: { provider: any; activeProviderURL: string; setActiveProviderURL: (url: string) => void; fetchData: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(provider.name);
+  const [editURL, setEditURL] = useState(provider.url);
+
+  const handleSave = async () => {
+    if (!editName.trim() || !editURL.trim()) return;
+    try {
+      const res = await fetch(`/api/dashboard/providers/${provider.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editName, url: editURL }),
+      });
+      if (res.ok) {
+        setEditing(false);
+        fetchData();
+      }
+    } catch {}
+  };
+
+  const handleCancel = () => {
+    setEditName(provider.name);
+    setEditURL(provider.url);
+    setEditing(false);
+  };
+
+  return (
+    <div
+      onClick={() => !editing && setActiveProviderURL(provider.url)}
+      className={`relative rounded-2xl overflow-hidden p-5 group transition-all duration-500 ${!editing ? 'cursor-pointer' : ''} ${activeProviderURL === provider.url && !editing
+        ? 'bg-gradient-to-br from-fuchsia-500/20 to-[#0E1320] border-fuchsia-500 scale-[1.02] shadow-[0_0_30px_rgba(255,0,255,0.08)]'
+        : 'bg-[#0E1320]/60 hover:bg-[#151C2E] border-[#222B3D]/60'
+      } border`}
+    >
+      {activeProviderURL === provider.url && !editing && (
+        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-fuchsia-400 to-transparent" />
+      )}
+      <div className="flex items-center justify-between mb-3">
+        {editing ? (
+          <input
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            className="bg-[#05070D] border border-[#222B3D] rounded-lg px-2 py-1 text-sm font-semibold text-[#F8FAFC] font-mono w-full mr-2"
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <div className="font-semibold text-sm text-[#F8FAFC]">{provider.name}</div>
+        )}
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="text-[9px] font-bold uppercase text-[#00FFA3] hover:underline">save</button>
+              <button onClick={(e) => { e.stopPropagation(); handleCancel(); }} className="text-[9px] font-bold uppercase text-red-400 hover:underline">cancel</button>
+            </>
+          ) : (
+            <button onClick={(e) => { e.stopPropagation(); setEditing(true); }} className="text-[9px] font-bold uppercase text-[#7B8AA0] hover:text-[#F8FAFC] opacity-0 group-hover:opacity-100 transition-opacity">edit</button>
+          )}
+          <div className={`w-3 h-3 rounded-full shrink-0 ${provider.status === 'online'
+            ? 'bg-[#00FFA3] shadow-[0_0_16px_rgba(0,255,163,0.5)] animate-pulse'
+            : 'bg-red-500/40'
+          }`} />
+        </div>
+      </div>
+      {editing ? (
+        <input
+          value={editURL}
+          onChange={(e) => setEditURL(e.target.value)}
+          className="bg-[#05070D] border border-[#222B3D] rounded-lg px-2 py-1 text-[11px] text-[#F8FAFC] font-mono w-full"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div className="text-[11px] text-[#7B8AA0] font-mono truncate">{provider.url}</div>
+      )}
+      <div className="mt-3 flex items-center gap-2">
+        {editing ? null : (
+          <>
+            <span className={`text-[9px] font-bold uppercase tracking-wider ${provider.status === 'online' ? 'text-[#00FFA3]' : 'text-red-400'}`}>
+              {provider.status}
+            </span>
+            {activeProviderURL === provider.url && (
+              <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF00FF] ml-auto">active target</span>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'requests' | 'providers' | 'benchmarks' | 'settings'>(() => {
     const hash = window.location.hash.replace('#', '');
     return (['dashboard', 'requests', 'providers', 'benchmarks', 'settings'] as const).includes(hash as any) ? hash as any : 'dashboard';
   });
   const [stats, setStats] = useState<any[]>([]);
+  const [requestStats, setRequestStats] = useState<any[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [providers, setProviders] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -259,6 +349,10 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [activeProviderURL, setActiveProviderURL] = useState<string>('');
   const [filterEndpoint, setFilterEndpoint] = useState<string>('');
+  const [filterProvider, setFilterProvider] = useState<string>('');
+  const [filterDateFrom, setFilterDateFrom] = useState<string>('');
+  const [filterDateTo, setFilterDateTo] = useState<string>('');
+  const [filterOptions, setFilterOptions] = useState<{ providers: string[]; endpoints: string[] }>({ providers: [], endpoints: [] });
 
   const [providerName, setProviderName] = useState('');
   const [providerProtocol, setProviderProtocol] = useState<'http' | 'https'>('http');
@@ -292,13 +386,31 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [detailId, setDetailId] = useState<number | null>(null);
 
+  const fetchFilteredStats = async () => {
+    const params = new URLSearchParams();
+    if (filterProvider) params.set('provider', filterProvider);
+    if (filterEndpoint) params.set('endpoint', filterEndpoint);
+    if (filterDateFrom) params.set('from', filterDateFrom);
+    if (filterDateTo) params.set('to', filterDateTo);
+    const qs = params.toString();
+    const url = '/api/dashboard/stats' + (qs ? '?' + qs : '');
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const s = await res.json();
+        setRequestStats(s.benchmarks || []);
+      }
+    } catch {}
+  };
+
   const fetchData = async () => {
     try {
-      const [statRes, modRes, provRes, sessRes] = await Promise.all([
+      const [statRes, modRes, provRes, sessRes, filtRes] = await Promise.all([
         fetch('/api/dashboard/stats').catch(() => null),
         fetch('/api/dashboard/models').catch(() => null),
         fetch('/api/dashboard/providers').catch(() => null),
         fetch('/api/sessions').catch(() => null),
+        fetch('/api/dashboard/filters').catch(() => null),
       ]);
 
       if (statRes) {
@@ -314,6 +426,7 @@ export default function App() {
         setProviders(p.providers || []);
       }
       if (sessRes) setSessions(await sessRes.json());
+      if (filtRes) setFilterOptions(await filtRes.json());
       try {
         const thRes = await fetch('/api/thresholds');
         if (thRes.ok) setThresholds(await thRes.json());
@@ -331,6 +444,12 @@ export default function App() {
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'requests') {
+      fetchFilteredStats();
+    }
+  }, [filterProvider, filterEndpoint, filterDateFrom, filterDateTo, activeTab]);
 
   useEffect(() => {
     if (!selectedModel && models.length > 0) {
@@ -431,12 +550,11 @@ export default function App() {
     }
   };
 
-  const filteredStats = stats.filter((s) => {
-    if (filterEndpoint && s.model_endpoint !== filterEndpoint) return false;
-    return true;
-  });
+  const displayStats = activeTab === 'requests' ? requestStats : stats;
 
-  const recentStats = filteredStats.slice(0, 6);
+  const recentStats = stats.slice(0, 6);
+
+  const providerNameMap = Object.fromEntries(providers.map((p: any) => [p.url, p.name]));
 
   const onlineCount = providers.filter((p) => p.status === 'online').length;
   const avgTps = stats.length
@@ -446,13 +564,11 @@ export default function App() {
     ? (stats.reduce((sum, s) => sum + s.ttft_ns, 0) / stats.length / 1_000_000).toFixed(0)
     : '--';
 
-  const chartData = [...filteredStats].reverse().map((s) => ({
+  const chartData = [...stats].reverse().map((s) => ({
     time: new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     tps: parseFloat(s.tps.toFixed(2)),
     ttft: s.ttft_ns / 1_000_000,
   }));
-
-  const uniqueEndpoints = Array.from(new Set(stats.map((s) => s.model_endpoint).filter(Boolean)));
 
   function KPI({ title, value, icon }: { title: string; value: string | number; icon: React.ReactNode }) {
     return (
@@ -467,7 +583,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#05070D] text-[#F8FAFC] font-sans flex flex-col overflow-x-hidden relative selection:bg-[#FF00FF]/30">
+    <div className="h-screen bg-[#05070D] text-[#F8FAFC] font-sans flex flex-col overflow-hidden relative selection:bg-[#FF00FF]/30">
 
       {/* Living background */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
@@ -535,8 +651,8 @@ export default function App() {
             }`}
         >
           <List className="w-3.5 h-3.5" /> Requests
-          {filteredStats.length > 0 && (
-            <span className="text-[9px] font-mono bg-[#FF00FF]/10 text-[#FF00FF] px-1.5 py-0.5 rounded-full">{filteredStats.length}</span>
+          {displayStats.length > 0 && (
+            <span className="text-[9px] font-mono bg-[#FF00FF]/10 text-[#FF00FF] px-1.5 py-0.5 rounded-full">{displayStats.length}</span>
           )}
         </button>
         <button
@@ -568,7 +684,7 @@ export default function App() {
         </button>
       </nav>
 
-      <main className="flex-1 px-6 pb-6 w-full">
+      <main className="flex-1 min-h-0 px-6 pb-6 w-full overflow-y-auto">
 
         {/* Dashboard Tab */}
         {activeTab === 'dashboard' && (
@@ -578,7 +694,7 @@ export default function App() {
               <KPI title="Active Providers" value={onlineCount} icon={<Signal className="w-4 h-4" />} />
               <KPI title="Avg TPS" value={avgTps} icon={<Gauge className="w-4 h-4" />} />
               <KPI title="Avg TTFT" value={`${avgTTFT} ms`} icon={<Activity className="w-4 h-4" />} />
-              <KPI title="Requests" value={filteredStats.length} icon={<BarChart3 className="w-4 h-4" />} />
+              <KPI title="Requests" value={stats.length} icon={<BarChart3 className="w-4 h-4" />} />
             </div>
 
             <section className="rounded-3xl bg-[#0E1320]/80 border border-[#222B3D]/60 p-6 relative overflow-hidden">
@@ -658,17 +774,6 @@ export default function App() {
                 )}
               </div>
               <div className="flex items-center gap-3">
-                <div className="w-44">
-                  <Select
-                    value={filterEndpoint}
-                    onChange={setFilterEndpoint}
-                    options={[
-                      { value: '', label: 'All Endpoints' },
-                      ...uniqueEndpoints.map((e) => ({ value: e, label: e })),
-                    ]}
-                    placeholder="All Endpoints"
-                  />
-                </div>
                 <button
                   onClick={fetchData}
                   className="p-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[#7B8AA0] hover:text-[#F8FAFC] hover:border-[#FF00FF]/50 transition-all duration-200 active:scale-95"
@@ -680,15 +785,52 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <div className="flex items-center gap-3 mb-4 flex-wrap">
+              <div className="w-48">
+                <Select
+                  value={filterProvider}
+                  onChange={setFilterProvider}
+                  options={[
+                    { value: '', label: 'All Providers' },
+                    ...filterOptions.providers.map((p) => ({ value: p, label: providerNameMap[p] || p.replace(/^https?:\/\//, '') })),
+                  ]}
+                  placeholder="All Providers"
+                />
+              </div>
+              <div className="w-44">
+                <Select
+                  value={filterEndpoint}
+                  onChange={setFilterEndpoint}
+                  options={[
+                    { value: '', label: 'All Paths' },
+                    ...filterOptions.endpoints.map((e) => ({ value: e, label: e })),
+                  ]}
+                  placeholder="All Paths"
+                />
+              </div>
+              <input
+                type="datetime-local"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="bg-[#0E1320] border border-[#222B3D] rounded-lg px-3 py-2 text-[10px] font-mono text-[#F8FAFC] w-48"
+              />
+              <span className="text-[9px] text-[#7B8AA0] font-mono">→</span>
+              <input
+                type="datetime-local"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="bg-[#0E1320] border border-[#222B3D] rounded-lg px-3 py-2 text-[10px] font-mono text-[#F8FAFC] w-48"
+              />
+            </div>
 
-            {filteredStats.length === 0 ? (
+            {displayStats.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-[#7B8AA0]">
                 <List className="w-10 h-10 animate-pulse mb-4 opacity-50" />
                 <p className="text-xs font-mono">Waiting for incoming traffic...</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {filteredStats.map((s) => (
+                {displayStats.map((s) => (
                   <Card key={s.id} s={s} onClick={() => setDetailId(s.id)} />
                 ))}
               </div>
@@ -716,35 +858,7 @@ export default function App() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {providers.map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => setActiveProviderURL(p.url)}
-                      className={`relative rounded-2xl overflow-hidden p-5 group transition-all duration-500 cursor-pointer ${activeProviderURL === p.url
-                          ? 'bg-gradient-to-br from-fuchsia-500/20 to-[#0E1320] border-fuchsia-500 scale-[1.02] shadow-[0_0_30px_rgba(255,0,255,0.08)]'
-                          : 'bg-[#0E1320]/60 hover:bg-[#151C2E] border-[#222B3D]/60'
-                        } border`}
-                    >
-                      {activeProviderURL === p.url && (
-                        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-fuchsia-400 to-transparent" />
-                      )}
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="font-semibold text-sm text-[#F8FAFC]">{p.name}</div>
-                        <div className={`w-3 h-3 rounded-full shrink-0 ${p.status === 'online'
-                            ? 'bg-[#00FFA3] shadow-[0_0_16px_rgba(0,255,163,0.5)] animate-pulse'
-                            : 'bg-red-500/40'
-                          }`} />
-                      </div>
-                      <div className="text-[11px] text-[#7B8AA0] font-mono truncate">{p.url}</div>
-                      <div className="mt-3 flex items-center gap-2">
-                        <span className={`text-[9px] font-bold uppercase tracking-wider ${p.status === 'online' ? 'text-[#00FFA3]' : 'text-red-400'
-                          }`}>
-                          {p.status}
-                        </span>
-                        {activeProviderURL === p.url && (
-                          <span className="text-[9px] font-bold uppercase tracking-wider text-[#FF00FF] ml-auto">active target</span>
-                        )}
-                      </div>
-                    </div>
+                    <ProviderCard key={p.id} provider={p} activeProviderURL={activeProviderURL} setActiveProviderURL={setActiveProviderURL} fetchData={fetchData} />
                   ))}
                 </div>
               )}

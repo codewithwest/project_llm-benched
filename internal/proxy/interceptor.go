@@ -43,16 +43,21 @@ type trackingResponseWriter struct {
 	firstTokenTime     time.Time
 	streamTokenCount   int
 	wordTokenCount     int
+	sseTokenCount      int
 	responseBytes      int
 	isInterceptTarget  bool
 	responseBody       bytes.Buffer
 }
 
 func (w *trackingResponseWriter) tokenCount() int {
-	if w.streamTokenCount > w.wordTokenCount {
-		return w.streamTokenCount
+	max := w.streamTokenCount
+	if w.wordTokenCount > max {
+		max = w.wordTokenCount
 	}
-	return w.wordTokenCount
+	if w.sseTokenCount > max {
+		max = w.sseTokenCount
+	}
+	return max
 }
 
 func (w *trackingResponseWriter) Write(b []byte) (int, error) {
@@ -63,6 +68,7 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 	if w.isInterceptTarget {
 		w.streamTokenCount += bytes.Count(b, []byte("\n"))
 		w.wordTokenCount += bytes.Count(b, []byte(" "))
+		w.sseTokenCount += countSSETokens(b)
 		w.responseBytes += len(b)
 		w.responseBody.Write(b)
 	}
@@ -70,11 +76,29 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+func countSSETokens(b []byte) int {
+	n := 0
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("data: ")) {
+			n++
+		}
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			n++
+		}
+	}
+	return n
+}
+
 func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	targetHost := p.TargetURL
 	if customTarget := r.Header.Get("X-Target-Provider"); customTarget != "" {
 		if parsed, err := url.Parse(customTarget); err == nil {
-			targetHost = parsed
+			if parsed.Scheme == "http" || parsed.Scheme == "https" {
+				targetHost = parsed
+			} else {
+				log.Printf("rejecting X-Target-Provider with unsupported scheme: %s", parsed.Scheme)
+			}
 		}
 	}
 
@@ -95,6 +119,8 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			modelName = extractModel(body)
 			isStream = extractStream(body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
+		} else {
+			r.Body = nil
 		}
 	}
 

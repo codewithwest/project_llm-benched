@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -22,7 +23,12 @@ func NewDashboardHandler(database *db.Database, targetURL string) *DashboardHand
 }
 
 func (h *DashboardHandler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
-	benchmarks, err := h.DB.GetBenchmarks()
+	provider := r.URL.Query().Get("provider")
+	endpoint := r.URL.Query().Get("endpoint")
+	from := r.URL.Query().Get("from")
+	to := r.URL.Query().Get("to")
+
+	benchmarks, err := h.DB.GetFilteredBenchmarks(provider, endpoint, from, to)
 	if err != nil {
 		http.Error(w, "Failed to get benchmarks", http.StatusInternalServerError)
 		return
@@ -38,6 +44,22 @@ func (h *DashboardHandler) HandleGetStats(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *DashboardHandler) HandleGetFilterOptions(w http.ResponseWriter, r *http.Request) {
+	providers, err := h.DB.GetDistinctProviders()
+	if err != nil {
+		providers = []string{}
+	}
+	endpoints, err2 := h.DB.GetDistinctEndpoints()
+	if err2 != nil {
+		endpoints = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"providers": providers,
+		"endpoints": endpoints,
+	})
 }
 
 func (h *DashboardHandler) HandleGetBenchmark(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +133,37 @@ func (h *DashboardHandler) HandleGetProviders(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (h *DashboardHandler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+	var p struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "Invalid body", http.StatusBadRequest)
+		return
+	}
+	if p.Name == "" || p.URL == "" {
+		http.Error(w, "name and url required", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(p.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		http.Error(w, "Invalid provider URL (must be http:// or https://)", http.StatusBadRequest)
+		return
+	}
+	if err := h.DB.UpdateProvider(id, p.Name, p.URL); err != nil {
+		http.Error(w, "Failed to update provider", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *DashboardHandler) HandleAddProvider(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -124,11 +177,22 @@ func (h *DashboardHandler) HandleAddProvider(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "Invalid body", http.StatusBadRequest)
 		return
 	}
-	
+
+	if p.Name == "" || p.URL == "" {
+		http.Error(w, "name and url required", http.StatusBadRequest)
+		return
+	}
+
+	parsed, err := url.Parse(p.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		http.Error(w, "Invalid provider URL (must be http:// or https://)", http.StatusBadRequest)
+		return
+	}
+
 	if err := h.DB.AddProvider(p.Name, p.URL); err != nil {
 		http.Error(w, "Failed to add provider", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusCreated)
 }
