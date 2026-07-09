@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"llm-benchmarker/internal/api"
@@ -20,6 +22,7 @@ type TransparentProxy struct {
 	TargetURL *url.URL
 	DB        *db.Database
 	ReverseProxy *httputil.ReverseProxy
+	activeTarget atomic.Value
 }
 
 func NewTransparentProxy(targetURL string, database *db.Database) (*TransparentProxy, error) {
@@ -30,11 +33,29 @@ func NewTransparentProxy(targetURL string, database *db.Database) (*TransparentP
 
 	proxy := httputil.NewSingleHostReverseProxy(parsedURL)
 
-	return &TransparentProxy{
+	tp := &TransparentProxy{
 		TargetURL:    parsedURL,
 		DB:           database,
 		ReverseProxy: proxy,
-	}, nil
+	}
+	tp.activeTarget.Store(parsedURL)
+	return tp, nil
+}
+
+func (p *TransparentProxy) SetActiveTarget(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+	}
+	p.activeTarget.Store(parsed)
+	return nil
+}
+
+func (p *TransparentProxy) getTarget() *url.URL {
+	return p.activeTarget.Load().(*url.URL)
 }
 
 type trackingResponseWriter struct {
@@ -91,7 +112,7 @@ func countSSETokens(b []byte) int {
 }
 
 func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	targetHost := p.TargetURL
+	targetHost := p.getTarget()
 	if customTarget := r.Header.Get("X-Target-Provider"); customTarget != "" {
 		if parsed, err := url.Parse(customTarget); err == nil {
 			if parsed.Scheme == "http" || parsed.Scheme == "https" {

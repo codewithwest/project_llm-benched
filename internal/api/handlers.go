@@ -13,6 +13,7 @@ import (
 type DashboardHandler struct {
 	DB        *db.Database
 	TargetURL string
+	SetProxyTarget func(string) error
 }
 
 func NewDashboardHandler(database *db.Database, targetURL string) *DashboardHandler {
@@ -159,6 +160,33 @@ func (h *DashboardHandler) HandleUpdateProvider(w http.ResponseWriter, r *http.R
 	}
 	if err := h.DB.UpdateProvider(id, p.Name, p.URL); err != nil {
 		http.Error(w, "Failed to update provider", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *DashboardHandler) HandleSetProxyTarget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.URL == "" {
+		http.Error(w, "url required", http.StatusBadRequest)
+		return
+	}
+	if h.SetProxyTarget == nil {
+		http.Error(w, "Proxy target not configurable", http.StatusInternalServerError)
+		return
+	}
+	if err := h.SetProxyTarget(body.URL); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

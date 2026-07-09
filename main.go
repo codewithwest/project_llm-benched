@@ -75,12 +75,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize proxy: %v", err)
 	}
+	dashboardAPI.SetProxyTarget = transparentProxy.SetActiveTarget
 	log.Printf("Transparent telemetry interception enabled for %s", *targetURL)
 
 	// Set up router
 	mux := http.NewServeMux()
 
 	// 1. Dashboard API routes
+	mux.HandleFunc("POST /api/proxy/target", dashboardAPI.HandleSetProxyTarget)
 	mux.HandleFunc("GET /api/dashboard/stats/{id}", dashboardAPI.HandleGetBenchmark)
 	mux.HandleFunc("GET /api/dashboard/stats", dashboardAPI.HandleGetStats)
 	mux.HandleFunc("GET /api/dashboard/models", dashboardAPI.HandleGetModels)

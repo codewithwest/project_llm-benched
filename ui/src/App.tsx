@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Activity, Send, X, Plus, Signal, BarChart3, Gauge, Cpu, Terminal, List, FileText, FlaskConical, Settings } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import BenchmarkPanel from './BenchmarkPanel';
@@ -348,6 +348,17 @@ export default function App() {
 
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [activeProviderURL, setActiveProviderURL] = useState<string>('');
+
+  const handleSetActiveProvider = async (url: string) => {
+    setActiveProviderURL(url);
+    try {
+      await fetch('/api/proxy/target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+    } catch {}
+  };
   const [filterEndpoint, setFilterEndpoint] = useState<string>('');
   const [filterProvider, setFilterProvider] = useState<string>('');
   const [filterDateFrom, setFilterDateFrom] = useState<string>('');
@@ -439,9 +450,18 @@ export default function App() {
     }
   };
 
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
+    const tick = () => {
+      fetchData();
+      if (activeTabRef.current === 'requests') {
+        fetchFilteredStats();
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 3000);
     return () => clearInterval(interval);
   }, []);
 
@@ -858,7 +878,7 @@ export default function App() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {providers.map((p) => (
-                    <ProviderCard key={p.id} provider={p} activeProviderURL={activeProviderURL} setActiveProviderURL={setActiveProviderURL} fetchData={fetchData} />
+                    <ProviderCard key={p.id} provider={p} activeProviderURL={activeProviderURL} setActiveProviderURL={handleSetActiveProvider} fetchData={fetchData} />
                   ))}
                 </div>
               )}
