@@ -121,7 +121,15 @@ func (h *BenchmarkHandler) HandleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go h.runBenchmark(runID, cfg)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("benchmark %d: panic recovered: %v", runID, r)
+				h.DB.UpdateBenchmarkRunStatus(runID, "failed")
+			}
+		}()
+		h.runBenchmark(runID, cfg)
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]int64{"run_id": runID})
@@ -171,6 +179,11 @@ func (h *BenchmarkHandler) runBenchmark(runID int64, cfg BenchmarkConfig) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("benchmark %d: parallel scaling panic: %v", runID, r)
+						}
+					}()
 					or, elapsed, err := sendOllamaRequest(cfg.TargetURL, cfg.Model, prompt, cfg.NumPredict)
 					if err != nil {
 						log.Printf("benchmark %d: parallel users=%d: %v", runID, users, err)
@@ -205,6 +218,11 @@ func (h *BenchmarkHandler) runBenchmark(runID int64, cfg BenchmarkConfig) {
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("benchmark %d: combined panic: %v", runID, r)
+							}
+						}()
 						or, elapsed, err := sendOllamaRequest(cfg.TargetURL, cfg.Model, prompt, cfg.NumPredict)
 						if err != nil {
 							log.Printf("benchmark %d: combined users=%d mult=%d: %v", runID, users, mult, err)
