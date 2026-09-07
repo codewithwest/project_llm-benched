@@ -366,6 +366,7 @@ export default function App() {
   const [filterDateTo, setFilterDateTo] = useState<string>('');
   const [filterOptions, setFilterOptions] = useState<{ providers: string[]; endpoints: string[] }>({ providers: [], endpoints: [] });
   const requestFiltersRef = useRef({ filterProvider, filterEndpoint, filterDateFrom, filterDateTo });
+  const filteredStatsRequestRef = useRef(0);
   requestFiltersRef.current = { filterProvider, filterEndpoint, filterDateFrom, filterDateTo };
 
   const [providerName, setProviderName] = useState('');
@@ -401,6 +402,7 @@ export default function App() {
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const fetchFilteredStats = async () => {
+    const requestId = ++filteredStatsRequestRef.current;
     const { filterProvider, filterEndpoint, filterDateFrom, filterDateTo } = requestFiltersRef.current;
     const params = new URLSearchParams();
     if (filterProvider) params.set('provider', filterProvider);
@@ -413,6 +415,7 @@ export default function App() {
       const res = await fetch(url);
       if (res.ok) {
         const s = await res.json();
+        if (requestId !== filteredStatsRequestRef.current) return;
         setRequestStats(s.benchmarks || []);
       }
     } catch {}
