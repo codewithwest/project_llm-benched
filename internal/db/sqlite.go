@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -15,6 +16,7 @@ type Benchmark struct {
 	Prompt         string    `json:"prompt"`
 	PromptLength   int       `json:"prompt_length"`
 	ModelEndpoint  string    `json:"model_endpoint"`
+	Model          string    `json:"model"`
 	ProviderURL    string    `json:"provider_url"`
 	TPS            float64   `json:"tps"`
 	TTFTNs         int64     `json:"ttft_ns"`
@@ -169,7 +171,7 @@ type BenchmarkFilter struct {
 }
 
 func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string) ([]Benchmark, error) {
-	q := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length FROM benchmarks WHERE 1=1`
+	q := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body FROM benchmarks WHERE 1=1`
 	args := make([]interface{}, 0)
 
 	if providerURL != "" {
@@ -200,9 +202,16 @@ func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string)
 	benchmarks := make([]Benchmark, 0)
 	for rows.Next() {
 		var b Benchmark
-		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength); err != nil {
+		var requestBody string
+		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength, &requestBody); err != nil {
 			log.Printf("Failed to scan benchmark row: %v", err)
 			continue
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(requestBody), &request); err == nil {
+			b.Model = request.Model
 		}
 		benchmarks = append(benchmarks, b)
 	}

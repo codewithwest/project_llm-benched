@@ -15,6 +15,7 @@ function Card({ s, onClick }: { s: any; onClick: () => void }) {
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-[#FF00FF]/60">#{s.id}</span>
           <span className="text-xs font-mono bg-[#151C2E] px-2 py-0.5 rounded text-[#FF00FF]">{s.model_endpoint}</span>
+          {s.model && <span className="text-xs font-mono text-[#00FFA3] truncate max-w-[12rem]" title={s.model}>{s.model}</span>}
         </div>
         <span className="text-[9px] font-mono text-[#7B8AA0]/60">{ts.toLocaleTimeString()}</span>
       </div>
@@ -364,6 +365,8 @@ export default function App() {
   const [filterDateFrom, setFilterDateFrom] = useState<string>('');
   const [filterDateTo, setFilterDateTo] = useState<string>('');
   const [filterOptions, setFilterOptions] = useState<{ providers: string[]; endpoints: string[] }>({ providers: [], endpoints: [] });
+  const requestFiltersRef = useRef({ filterProvider, filterEndpoint, filterDateFrom, filterDateTo });
+  requestFiltersRef.current = { filterProvider, filterEndpoint, filterDateFrom, filterDateTo };
 
   const [providerName, setProviderName] = useState('');
   const [providerProtocol, setProviderProtocol] = useState<'http' | 'https'>('http');
@@ -398,6 +401,7 @@ export default function App() {
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const fetchFilteredStats = async () => {
+    const { filterProvider, filterEndpoint, filterDateFrom, filterDateTo } = requestFiltersRef.current;
     const params = new URLSearchParams();
     if (filterProvider) params.set('provider', filterProvider);
     if (filterEndpoint) params.set('endpoint', filterEndpoint);
