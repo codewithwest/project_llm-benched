@@ -27,6 +27,9 @@ type Benchmark struct {
 	DurationMs     int64     `json:"duration_ms"`
 	RequestBody    string    `json:"request_body,omitempty"`
 	ResponseBody   string    `json:"response_body,omitempty"`
+	StatusCode     int       `json:"status_code"`
+	ErrorMessage   string    `json:"error_message,omitempty"`
+	TokenSource    string    `json:"token_source"`
 }
 
 type Provider struct {
@@ -71,7 +74,11 @@ func InitDB(filepath string) (*Database, error) {
 		client_ip TEXT DEFAULT '',
 		duration_ms INTEGER DEFAULT 0,
 		request_body TEXT DEFAULT '',
-		response_body TEXT DEFAULT ''
+		response_body TEXT DEFAULT '',
+		model TEXT DEFAULT '',
+		status_code INTEGER DEFAULT 0,
+		error_message TEXT DEFAULT '',
+		token_source TEXT DEFAULT 'estimate'
 	);
 
 	CREATE TABLE IF NOT EXISTS benchmark_runs (
@@ -130,6 +137,13 @@ func InitDB(filepath string) (*Database, error) {
 	db.Exec("ALTER TABLE benchmarks ADD COLUMN response_body TEXT DEFAULT ''")
 	db.Exec("ALTER TABLE benchmarks ADD COLUMN client_ip TEXT DEFAULT ''")
 	db.Exec("ALTER TABLE benchmarks ADD COLUMN duration_ms INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE benchmarks ADD COLUMN model TEXT DEFAULT ''")
+	db.Exec("ALTER TABLE benchmarks ADD COLUMN status_code INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE benchmarks ADD COLUMN error_message TEXT DEFAULT ''")
+	db.Exec("ALTER TABLE benchmarks ADD COLUMN token_source TEXT DEFAULT 'estimate'")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_benchmarks_timestamp ON benchmarks(timestamp DESC)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_benchmarks_endpoint ON benchmarks(model_endpoint)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_benchmarks_model ON benchmarks(model)")
 
 	return &Database{db: db}, nil
 }
@@ -151,8 +165,12 @@ func (d *Database) PurgeOldBenchmarks(hours int) (int64, error) {
 }
 
 func (d *Database) SaveBenchmark(prompt, endpoint, providerURL, clientIP string, tps float64, ttftNs, rttNs, durationMs int64, totalTokens, promptLength, responseLength int, requestBody, responseBody string) error {
-	query := `INSERT INTO benchmarks (prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body, response_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := d.db.Exec(query, prompt, promptLength, endpoint, providerURL, clientIP, durationMs, tps, ttftNs, rttNs, totalTokens, responseLength, requestBody, responseBody)
+	return d.SaveBenchmarkWithMetadata(prompt, endpoint, "", providerURL, clientIP, 200, "", "estimate", tps, ttftNs, rttNs, durationMs, totalTokens, promptLength, responseLength, requestBody, responseBody)
+}
+
+func (d *Database) SaveBenchmarkWithMetadata(prompt, endpoint, model, providerURL, clientIP string, statusCode int, errorMessage, tokenSource string, tps float64, ttftNs, rttNs, durationMs int64, totalTokens, promptLength, responseLength int, requestBody, responseBody string) error {
+	query := `INSERT INTO benchmarks (prompt, prompt_length, model_endpoint, model, provider_url, client_ip, status_code, error_message, token_source, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body, response_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := d.db.Exec(query, prompt, promptLength, endpoint, model, providerURL, clientIP, statusCode, errorMessage, tokenSource, durationMs, tps, ttftNs, rttNs, totalTokens, responseLength, requestBody, responseBody)
 	if err != nil {
 		log.Printf("Failed to save benchmark: %v", err)
 	}
@@ -215,6 +233,9 @@ func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string)
 		}
 		benchmarks = append(benchmarks, b)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return benchmarks, nil
 }
 
@@ -253,9 +274,9 @@ func (d *Database) GetDistinctEndpoints() ([]string, error) {
 }
 
 func (d *Database) GetBenchmark(id int) (*Benchmark, error) {
-	query := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body, response_body FROM benchmarks WHERE id = ?`
+	query := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, model, provider_url, client_ip, status_code, error_message, token_source, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body, response_body FROM benchmarks WHERE id = ?`
 	var b Benchmark
-	err := d.db.QueryRow(query, id).Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength, &b.RequestBody, &b.ResponseBody)
+	err := d.db.QueryRow(query, id).Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.Model, &b.ProviderURL, &b.ClientIP, &b.StatusCode, &b.ErrorMessage, &b.TokenSource, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength, &b.RequestBody, &b.ResponseBody)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +307,12 @@ func (d *Database) AddProvider(name, url string) error {
 		return fmt.Errorf("provider with name %q or url %q already exists", name, url)
 	}
 	return nil
+}
+
+func (d *Database) HasProviderURL(url string) (bool, error) {
+	var exists int
+	err := d.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM providers WHERE url = ?)`, url).Scan(&exists)
+	return exists == 1, err
 }
 
 func (d *Database) UpdateProviderStatus(id int, status string) error {

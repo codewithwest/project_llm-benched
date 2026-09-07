@@ -6,6 +6,7 @@ import Select from './Select';
 
 function Card({ s, onClick }: { s: any; onClick: () => void }) {
   const ts = new Date(s.timestamp);
+  const failed = s.status_code >= 400;
   return (
     <div
       onClick={onClick}
@@ -17,7 +18,7 @@ function Card({ s, onClick }: { s: any; onClick: () => void }) {
           <span className="text-xs font-mono bg-[#151C2E] px-2 py-0.5 rounded text-[#FF00FF]">{s.model_endpoint}</span>
           {s.model && <span className="text-xs font-mono text-[#00FFA3] truncate max-w-[12rem]" title={s.model}>{s.model}</span>}
         </div>
-        <span className="text-[9px] font-mono text-[#7B8AA0]/60">{ts.toLocaleTimeString()}</span>
+        <span className={`text-[9px] font-mono ${failed ? 'text-red-400' : 'text-[#7B8AA0]/60'}`}>{failed ? `HTTP ${s.status_code}` : ts.toLocaleTimeString()}</span>
       </div>
       <div className="text-[11px] text-[#7B8AA0] font-mono truncate mb-3">{(s.prompt || '').substring(0, 120)}{(s.prompt || '').length > 120 ? '...' : ''}</div>
       <div className="flex items-center gap-4 text-xs">
@@ -40,6 +41,7 @@ function Card({ s, onClick }: { s: any; onClick: () => void }) {
         <span>{s.client_ip || 'unknown'}</span>
         <span>·</span>
         <span>{s.duration_ms >= 1000 ? (s.duration_ms / 1000).toFixed(1) + 's' : s.duration_ms + 'ms'}</span>
+        {s.token_source && <><span>·</span><span>{s.token_source}</span></>}
       </div>
     </div>
   );
@@ -142,7 +144,7 @@ function DetailModal({ id, onClose }: { id: number; onClose: () => void }) {
               </div>
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Model</div>
-                <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.model_endpoint}</div>
+                <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.model || 'unknown'}</div>
               </div>
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Duration</div>
@@ -151,6 +153,11 @@ function DetailModal({ id, onClose }: { id: number; onClose: () => void }) {
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Client IP</div>
                 <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.client_ip || 'unknown'}</div>
+              </div>
+              <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Outcome</div>
+                <div className={`text-lg font-bold font-mono ${data.status_code >= 400 ? 'text-red-400' : 'text-[#00FFA3]'}`}>{data.status_code || 'unknown'}</div>
+                <div className="text-[9px] text-[#7B8AA0] mt-1">{data.token_source || 'estimate'}</div>
               </div>
             </div>
 
@@ -802,13 +809,20 @@ export default function App() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={fetchData}
+                  onClick={() => { fetchData(); fetchRequestStats(); }}
                   className="p-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[#7B8AA0] hover:text-[#F8FAFC] hover:border-[#FF00FF]/50 transition-all duration-200 active:scale-95"
                   title="Refresh"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
+                </button>
+                <button
+                  onClick={exportRequests}
+                  disabled={displayStats.length === 0}
+                  className="px-3 py-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[10px] font-mono text-[#7B8AA0] hover:text-[#F8FAFC] disabled:opacity-30"
+                >
+                  Export CSV
                 </button>
               </div>
             </div>

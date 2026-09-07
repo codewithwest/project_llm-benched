@@ -78,6 +78,30 @@ func TestSaveAndGetBenchmarks(t *testing.T) {
 	}
 }
 
+func TestSaveBenchmarkWithMetadataAndFilter(t *testing.T) {
+	d, err := InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer d.Close()
+
+	err = d.SaveBenchmarkWithMetadata("find failure", "/v1/chat/completions", "qwen3", "http://engine", "127.0.0.1", 502, "upstream unavailable", "stream-chunks", 0, 0, 0, 120, 0, 0, 0, `{"model":"qwen3"}`, "")
+	if err != nil {
+		t.Fatalf("SaveBenchmarkWithMetadata failed: %v", err)
+	}
+
+	results, err := d.GetFilteredBenchmarks("", "/v1/chat/completions", "qwen3", "", "", "failure", "error")
+	if err != nil {
+		t.Fatalf("GetFilteredBenchmarks failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one filtered result, got %d", len(results))
+	}
+	if results[0].StatusCode != 502 || results[0].ErrorMessage != "upstream unavailable" || results[0].TokenSource != "stream-chunks" {
+		t.Fatalf("metadata was not persisted: %+v", results[0])
+	}
+}
+
 func TestGetBenchmarks_EmptyDB(t *testing.T) {
 	d, err := InitDB(":memory:")
 	if err != nil {

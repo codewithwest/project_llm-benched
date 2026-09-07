@@ -218,4 +218,40 @@ func TestServeHTTP_ReadsRequestBody(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
+	benchmarks, err := database.GetBenchmarks()
+	if err != nil || len(benchmarks) != 1 {
+		t.Fatalf("expected one captured benchmark, got %d (%v)", len(benchmarks), err)
+	}
+	if benchmarks[0].Model != "unknown" || benchmarks[0].StatusCode != http.StatusOK {
+		t.Fatalf("expected model and status metadata, got %+v", benchmarks[0])
+	}
+}
+
+func TestTransparentProxy_SavesUpstreamErrorsWithoutTokens(t *testing.T) {
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "overloaded", http.StatusServiceUnavailable)
+	}))
+	defer targetServer.Close()
+
+	database, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+
+	p, err := NewTransparentProxy(targetServer.URL, database)
+	if err != nil {
+		t.Fatalf("NewTransparentProxy failed: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/generate", bytes.NewBufferString(`{"model":"qwen3","prompt":"hello"}`))
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, req)
+
+	benchmarks, err := database.GetBenchmarks()
+	if err != nil || len(benchmarks) != 1 {
+		t.Fatalf("expected failed request to be captured, got %d (%v)", len(benchmarks), err)
+	}
+	if benchmarks[0].StatusCode != http.StatusServiceUnavailable || benchmarks[0].Model != "qwen3" {
+		t.Fatalf("expected failure metadata, got %+v", benchmarks[0])
+	}
 }
