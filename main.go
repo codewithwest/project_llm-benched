@@ -12,6 +12,7 @@ import (
 
 	"llm-benchmarker/internal/api"
 	"llm-benchmarker/internal/db"
+	"llm-benchmarker/internal/logutil"
 	"llm-benchmarker/internal/monitor"
 	"llm-benchmarker/internal/proxy"
 )
@@ -31,7 +32,16 @@ func main() {
 	targetURL := flag.String("target", "http://127.0.0.1:11434", "Remote LLM engine URL")
 	dbPath := flag.String("db", "benchmarks.db", "Path to SQLite database")
 	interceptPort := flag.Int("intercept-port", 0, "If set, also listen on this port as a transparent proxy (e.g. 11434 to intercept existing Ollama traffic)")
+	retentionHours := flag.Int("retention", 0, "Auto-purge benchmark data older than this many hours (0 = disable)")
+	logPath := flag.String("log", "llm-benchmarker.log", "Path to log file")
 	flag.Parse()
+
+	writer, err := logutil.NewRotatingWriter(*logPath, 1*1024*1024)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer writer.Close()
+	log.SetOutput(writer)
 
 	// Initialize Database
 	database, err := db.InitDB(*dbPath)
@@ -43,6 +53,16 @@ func main() {
 
 	// Mark any orphaned benchmark runs (from a previous server crash) as failed
 	database.ResolveOrphanedRuns()
+
+	// Auto-purge old benchmark data if retention is configured
+	if *retentionHours > 0 {
+		n, err := database.PurgeOldBenchmarks(*retentionHours)
+		if err != nil {
+			log.Printf("Failed to purge old benchmarks: %v", err)
+		} else if n > 0 {
+			log.Printf("Purged %d old benchmark records (retention: %d hours)", n, *retentionHours)
+		}
+	}
 
 	// Ensure the default target is added to the database
 	if err := database.AddProvider("Default Engine", *targetURL); err != nil {
@@ -64,15 +84,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize proxy: %v", err)
 	}
+	dashboardAPI.SetProxyTarget = transparentProxy.SetActiveTarget
 	log.Printf("Transparent telemetry interception enabled for %s", *targetURL)
 
 	// Set up router
 	mux := http.NewServeMux()
 
 	// 1. Dashboard API routes
+	mux.HandleFunc("POST /api/proxy/target", dashboardAPI.HandleSetProxyTarget)
 	mux.HandleFunc("GET /api/dashboard/stats/{id}", dashboardAPI.HandleGetBenchmark)
 	mux.HandleFunc("GET /api/dashboard/stats", dashboardAPI.HandleGetStats)
 	mux.HandleFunc("GET /api/dashboard/models", dashboardAPI.HandleGetModels)
+	mux.HandleFunc("GET /api/dashboard/filters", dashboardAPI.HandleGetFilterOptions)
+	mux.HandleFunc("PATCH /api/dashboard/providers/{id}", dashboardAPI.HandleUpdateProvider)
 	mux.HandleFunc("/api/dashboard/providers", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPost {
 			dashboardAPI.HandleAddProvider(w, req)

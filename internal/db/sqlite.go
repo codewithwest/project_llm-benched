@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -154,6 +155,15 @@ func (d *Database) ResolveOrphanedRuns() {
 	}
 }
 
+func (d *Database) PurgeOldBenchmarks(hours int) (int64, error) {
+	query := `DELETE FROM benchmarks WHERE timestamp < datetime('now', ?)`
+	res, err := d.db.Exec(query, fmt.Sprintf("-%d hours", hours))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (d *Database) SaveBenchmark(prompt, endpoint, providerURL, clientIP string, tps float64, ttftNs, rttNs, durationMs int64, totalTokens, promptLength, responseLength int, requestBody, responseBody string) error {
 	return d.SaveBenchmarkWithMetadata(prompt, endpoint, "", providerURL, clientIP, 200, "", "estimate", tps, ttftNs, rttNs, durationMs, totalTokens, promptLength, responseLength, requestBody, responseBody)
 }
@@ -168,44 +178,40 @@ func (d *Database) SaveBenchmarkWithMetadata(prompt, endpoint, model, providerUR
 }
 
 func (d *Database) GetBenchmarks() ([]Benchmark, error) {
-	return d.GetFilteredBenchmarks("", "", "", "", "", "", "")
+	return d.GetFilteredBenchmarks("", "", "", "")
 }
 
-func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, model, from, to, search, status string) ([]Benchmark, error) {
-	query := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, model, provider_url, client_ip, status_code, error_message, token_source, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length FROM benchmarks WHERE 1=1`
-	args := make([]interface{}, 0, 5)
+type BenchmarkFilter struct {
+	ProviderURL string
+	Endpoint    string
+	From        string
+	To          string
+}
+
+func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string) ([]Benchmark, error) {
+	q := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body FROM benchmarks WHERE 1=1`
+	args := make([]interface{}, 0)
+
 	if providerURL != "" {
-		query += ` AND provider_url = ?`
+		q += ` AND provider_url = ?`
 		args = append(args, providerURL)
 	}
 	if endpoint != "" {
-		query += ` AND model_endpoint = ?`
+		q += ` AND model_endpoint = ?`
 		args = append(args, endpoint)
 	}
-	if model != "" {
-		query += ` AND model = ?`
-		args = append(args, model)
-	}
 	if from != "" {
-		query += ` AND timestamp >= ?`
+		q += ` AND timestamp >= ?`
 		args = append(args, from)
 	}
 	if to != "" {
-		query += ` AND timestamp <= ?`
+		q += ` AND timestamp <= ?`
 		args = append(args, to)
 	}
-	if search != "" {
-		query += ` AND (prompt LIKE ? OR model LIKE ? OR model_endpoint LIKE ?)`
-		term := "%" + search + "%"
-		args = append(args, term, term, term)
-	}
-	if status == "success" {
-		query += ` AND status_code < 400`
-	} else if status == "error" {
-		query += ` AND status_code >= 400`
-	}
-	query += ` ORDER BY id DESC LIMIT 200`
-	rows, err := d.db.Query(query, args...)
+
+	q += ` ORDER BY id DESC LIMIT 200`
+
+	rows, err := d.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -214,9 +220,16 @@ func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, model, from, to,
 	benchmarks := make([]Benchmark, 0)
 	for rows.Next() {
 		var b Benchmark
-		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.Model, &b.ProviderURL, &b.ClientIP, &b.StatusCode, &b.ErrorMessage, &b.TokenSource, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength); err != nil {
+		var requestBody string
+		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength, &requestBody); err != nil {
 			log.Printf("Failed to scan benchmark row: %v", err)
 			continue
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(requestBody), &request); err == nil {
+			b.Model = request.Model
 		}
 		benchmarks = append(benchmarks, b)
 	}
@@ -224,6 +237,40 @@ func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, model, from, to,
 		return nil, err
 	}
 	return benchmarks, nil
+}
+
+func (d *Database) GetDistinctProviders() ([]string, error) {
+	rows, err := d.db.Query(`SELECT DISTINCT url FROM providers WHERE url != '' UNION SELECT DISTINCT provider_url FROM benchmarks WHERE provider_url != '' ORDER BY 1 ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var providers []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			continue
+		}
+		providers = append(providers, p)
+	}
+	return providers, nil
+}
+
+func (d *Database) GetDistinctEndpoints() ([]string, error) {
+	rows, err := d.db.Query(`SELECT DISTINCT model_endpoint FROM benchmarks WHERE model_endpoint != '' ORDER BY model_endpoint ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var endpoints []string
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			continue
+		}
+		endpoints = append(endpoints, e)
+	}
+	return endpoints, nil
 }
 
 func (d *Database) GetBenchmark(id int) (*Benchmark, error) {
@@ -234,6 +281,19 @@ func (d *Database) GetBenchmark(id int) (*Benchmark, error) {
 		return nil, err
 	}
 	return &b, nil
+}
+
+func (d *Database) UpdateProvider(id int, name, url string) error {
+	query := `UPDATE providers SET name = ?, url = ? WHERE id = ?`
+	res, err := d.db.Exec(query, name, url, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("provider with id %d not found", id)
+	}
+	return nil
 }
 
 func (d *Database) AddProvider(name, url string) error {

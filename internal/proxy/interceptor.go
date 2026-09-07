@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"llm-benchmarker/internal/api"
@@ -22,6 +24,7 @@ type TransparentProxy struct {
 	TargetURL    *url.URL
 	DB           *db.Database
 	ReverseProxy *httputil.ReverseProxy
+	activeTarget atomic.Value
 }
 
 func NewTransparentProxy(targetURL string, database *db.Database) (*TransparentProxy, error) {
@@ -32,31 +35,52 @@ func NewTransparentProxy(targetURL string, database *db.Database) (*TransparentP
 
 	proxy := httputil.NewSingleHostReverseProxy(parsedURL)
 
-	return &TransparentProxy{
+	tp := &TransparentProxy{
 		TargetURL:    parsedURL,
 		DB:           database,
 		ReverseProxy: proxy,
-	}, nil
+	}
+	tp.activeTarget.Store(parsedURL)
+	return tp, nil
+}
+
+func (p *TransparentProxy) SetActiveTarget(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", parsed.Scheme)
+	}
+	p.activeTarget.Store(parsed)
+	return nil
+}
+
+func (p *TransparentProxy) getTarget() *url.URL {
+	return p.activeTarget.Load().(*url.URL)
 }
 
 type trackingResponseWriter struct {
 	http.ResponseWriter
-	startTime         time.Time
-	firstTokenTime    time.Time
-	streamTokenCount  int
-	wordTokenCount    int
-	responseBytes     int
-	isInterceptTarget bool
-	responseBody      bytes.Buffer
-	statusCode        int
-	errorMessage      string
+	startTime          time.Time
+	firstTokenTime     time.Time
+	streamTokenCount   int
+	wordTokenCount     int
+	sseTokenCount      int
+	responseBytes      int
+	isInterceptTarget  bool
+	responseBody       bytes.Buffer
 }
 
 func (w *trackingResponseWriter) tokenCount() int {
-	if w.streamTokenCount > w.wordTokenCount {
-		return w.streamTokenCount
+	max := w.streamTokenCount
+	if w.wordTokenCount > max {
+		max = w.wordTokenCount
 	}
-	return w.wordTokenCount
+	if w.sseTokenCount > max {
+		max = w.sseTokenCount
+	}
+	return max
 }
 
 func (w *trackingResponseWriter) Write(b []byte) (int, error) {
@@ -70,6 +94,7 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 	if w.isInterceptTarget {
 		w.streamTokenCount += bytes.Count(b, []byte("\n"))
 		w.wordTokenCount += bytes.Count(b, []byte(" "))
+		w.sseTokenCount += countSSETokens(b)
 		w.responseBytes += len(b)
 		capture := b
 		if w.responseBody.Len() < maxCapturedBodyBytes {
@@ -84,28 +109,29 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-func (w *trackingResponseWriter) WriteHeader(code int) {
-	if w.statusCode != 0 {
-		return
+func countSSETokens(b []byte) int {
+	n := 0
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("data: ")) {
+			n++
+		}
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			n++
+		}
 	}
-	w.statusCode = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *trackingResponseWriter) Flush() {
-	if w.statusCode == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	return n
 }
 
 func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	targetHost := p.TargetURL
+	targetHost := p.getTarget()
 	if customTarget := r.Header.Get("X-Target-Provider"); customTarget != "" {
 		if parsed, err := url.Parse(customTarget); err == nil {
-			targetHost = parsed
+			if parsed.Scheme == "http" || parsed.Scheme == "https" {
+				targetHost = parsed
+			} else {
+				log.Printf("rejecting X-Target-Provider with unsupported scheme: %s", parsed.Scheme)
+			}
 		}
 	}
 
@@ -130,6 +156,8 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			modelName = extractModel(body)
 			isStream = extractStream(body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
+		} else {
+			r.Body = nil
 		}
 	}
 

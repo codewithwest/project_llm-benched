@@ -14,6 +14,11 @@ func StartPoller(database *db.Database, ctx context.Context) {
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("poller: panic recovered: %v", r)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -27,6 +32,11 @@ func StartPoller(database *db.Database, ctx context.Context) {
 
 				for _, p := range providers {
 					go func(prov db.Provider) {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf("poller: health check panic for %s: %v", prov.URL, r)
+							}
+						}()
 						resp, err := client.Get(prov.URL)
 						status := "online"
 						if err != nil {

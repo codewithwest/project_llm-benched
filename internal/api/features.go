@@ -301,6 +301,12 @@ func (h *FeaturesHandler) CheckSchedules() {
 			continue
 		}
 		go func(id int64, c BenchmarkConfig) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("scheduled benchmark %d: panic recovered: %v", id, r)
+					h.DB.UpdateScheduleLastRun(s.ID, "failed")
+				}
+			}()
 			if h.Runner != nil {
 				h.Runner.runBenchmark(id, c)
 			}
@@ -331,6 +337,11 @@ func parseCronInterval(expr string) time.Duration {
 // StartScheduler launches a background goroutine that checks schedules every 30s.
 func (h *FeaturesHandler) StartScheduler() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("scheduler: panic recovered: %v", r)
+			}
+		}()
 		for {
 			time.Sleep(30 * time.Second)
 			h.CheckSchedules()

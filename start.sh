@@ -44,6 +44,18 @@ run() {
   echo "==> PID $pid | tail -f $LOGFILE to watch | kill -TERM \$(cat $PIDFILE) to stop"
 }
 
+# Rotate log if over 1MB before starting
+if [[ -f "$LOGFILE" ]]; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+        size=$(stat -f%z "$LOGFILE" 2>/dev/null)
+    else
+        size=$(stat -c%s "$LOGFILE" 2>/dev/null)
+    fi
+    if [[ -n "$size" ]] && [[ "$size" -ge 1048576 ]]; then
+        mv "$LOGFILE" "$LOGFILE.old"
+    fi
+fi
+
 stop_old
 build
 run "$@"
