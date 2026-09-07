@@ -586,6 +586,31 @@ export default function App() {
 
   const displayStats = activeTab === 'requests' ? requestStats : stats;
 
+  const exportRequests = () => {
+    const header = ['id', 'timestamp', 'model', 'endpoint', 'status_code', 'tps', 'ttft_ms', 'tokens', 'duration_ms', 'client_ip'];
+    const rows = displayStats.map((s) => [
+      s.id,
+      s.timestamp,
+      s.model || '',
+      s.model_endpoint || '',
+      s.status_code || '',
+      s.tps ?? '',
+      s.ttft_ns ? (s.ttft_ns / 1_000_000).toFixed(1) : '',
+      s.total_tokens ?? '',
+      s.duration_ms ?? '',
+      s.client_ip || '',
+    ]);
+    const csv = [header, ...rows]
+      .map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'llm-requests.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const recentStats = stats.slice(0, 6);
 
   const providerNameMap = Object.fromEntries(providers.map((p: any) => [p.url, p.name]));
@@ -809,7 +834,7 @@ export default function App() {
               </div>
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => { fetchData(); fetchRequestStats(); }}
+                  onClick={() => { fetchData(); fetchFilteredStats(); }}
                   className="p-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[#7B8AA0] hover:text-[#F8FAFC] hover:border-[#FF00FF]/50 transition-all duration-200 active:scale-95"
                   title="Refresh"
                 >

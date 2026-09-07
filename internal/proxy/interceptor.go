@@ -62,14 +62,16 @@ func (p *TransparentProxy) getTarget() *url.URL {
 
 type trackingResponseWriter struct {
 	http.ResponseWriter
-	startTime          time.Time
-	firstTokenTime     time.Time
-	streamTokenCount   int
-	wordTokenCount     int
-	sseTokenCount      int
-	responseBytes      int
-	isInterceptTarget  bool
-	responseBody       bytes.Buffer
+	startTime         time.Time
+	firstTokenTime    time.Time
+	streamTokenCount  int
+	wordTokenCount    int
+	sseTokenCount     int
+	responseBytes     int
+	isInterceptTarget bool
+	responseBody      bytes.Buffer
+	statusCode        int
+	errorMessage      string
 }
 
 func (w *trackingResponseWriter) tokenCount() int {
@@ -107,6 +109,23 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 	}
 
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *trackingResponseWriter) WriteHeader(code int) {
+	if w.statusCode != 0 {
+		return
+	}
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *trackingResponseWriter) Flush() {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func countSSETokens(b []byte) int {
