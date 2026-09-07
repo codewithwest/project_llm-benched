@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -15,6 +16,7 @@ type Benchmark struct {
 	Prompt         string    `json:"prompt"`
 	PromptLength   int       `json:"prompt_length"`
 	ModelEndpoint  string    `json:"model_endpoint"`
+	Model          string    `json:"model"`
 	ProviderURL    string    `json:"provider_url"`
 	TPS            float64   `json:"tps"`
 	TTFTNs         int64     `json:"ttft_ns"`
@@ -28,11 +30,11 @@ type Benchmark struct {
 }
 
 type Provider struct {
-	ID        int       `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	Status    string    `json:"status"` // "online" or "offline"
-	LastPing  time.Time `json:"last_ping"`
+	ID       int       `json:"id"`
+	Name     string    `json:"name"`
+	URL      string    `json:"url"`
+	Status   string    `json:"status"` // "online" or "offline"
+	LastPing time.Time `json:"last_ping"`
 }
 
 type Database struct {
@@ -169,7 +171,7 @@ type BenchmarkFilter struct {
 }
 
 func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string) ([]Benchmark, error) {
-	q := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length FROM benchmarks WHERE 1=1`
+	q := `SELECT id, timestamp, prompt, prompt_length, model_endpoint, provider_url, client_ip, duration_ms, tps, ttft_ns, network_rtt_ns, total_tokens, response_length, request_body FROM benchmarks WHERE 1=1`
 	args := make([]interface{}, 0)
 
 	if providerURL != "" {
@@ -200,9 +202,16 @@ func (d *Database) GetFilteredBenchmarks(providerURL, endpoint, from, to string)
 	benchmarks := make([]Benchmark, 0)
 	for rows.Next() {
 		var b Benchmark
-		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength); err != nil {
+		var requestBody string
+		if err := rows.Scan(&b.ID, &b.Timestamp, &b.Prompt, &b.PromptLength, &b.ModelEndpoint, &b.ProviderURL, &b.ClientIP, &b.DurationMs, &b.TPS, &b.TTFTNs, &b.NetworkRTTNs, &b.TotalTokens, &b.ResponseLength, &requestBody); err != nil {
 			log.Printf("Failed to scan benchmark row: %v", err)
 			continue
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(requestBody), &request); err == nil {
+			b.Model = request.Model
 		}
 		benchmarks = append(benchmarks, b)
 	}
@@ -430,10 +439,10 @@ func (d *Database) DeleteBenchmarkRun(id int) error {
 // ── Sessions ──
 
 type SessionSummary struct {
-	ClientIP    string    `json:"client_ip"`
-	Count       int       `json:"count"`
-	LastSeen    time.Time `json:"last_seen"`
-	Models      string    `json:"models"`
+	ClientIP string    `json:"client_ip"`
+	Count    int       `json:"count"`
+	LastSeen time.Time `json:"last_seen"`
+	Models   string    `json:"models"`
 }
 
 func (d *Database) GetSessions() ([]SessionSummary, error) {
@@ -458,16 +467,16 @@ func (d *Database) GetSessions() ([]SessionSummary, error) {
 // ── Benchmark Schedules ──
 
 type BenchmarkSchedule struct {
-	ID             int       `json:"id"`
-	CreatedAt      time.Time `json:"created_at"`
-	Model          string    `json:"model"`
-	TargetURL      string    `json:"target_url"`
-	NumPredict     int       `json:"num_predict"`
-	CronExpr       string    `json:"cron_expr"`
-	ConfigJSON     string    `json:"config_json"`
-	Enabled        bool      `json:"enabled"`
-	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
-	LastRunStatus  string    `json:"last_run_status"`
+	ID            int        `json:"id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	Model         string     `json:"model"`
+	TargetURL     string     `json:"target_url"`
+	NumPredict    int        `json:"num_predict"`
+	CronExpr      string     `json:"cron_expr"`
+	ConfigJSON    string     `json:"config_json"`
+	Enabled       bool       `json:"enabled"`
+	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
+	LastRunStatus string     `json:"last_run_status"`
 }
 
 func (d *Database) CreateSchedule(s *BenchmarkSchedule) (int64, error) {
@@ -516,10 +525,10 @@ func (d *Database) UpdateScheduleLastRun(id int, status string) {
 type AlertThreshold struct {
 	ID        int       `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
-	Metric    string    `json:"metric"`       // "tps", "ttft_ms", "duration_ms"
-	Operator  string    `json:"operator"`     // "lt", "gt"
+	Metric    string    `json:"metric"`   // "tps", "ttft_ms", "duration_ms"
+	Operator  string    `json:"operator"` // "lt", "gt"
 	Value     float64   `json:"value"`
-	Model     string    `json:"model"`        // empty = all models
+	Model     string    `json:"model"` // empty = all models
 	Enabled   bool      `json:"enabled"`
 }
 
