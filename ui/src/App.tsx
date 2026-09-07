@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Activity, Send, X, Plus, Signal, BarChart3, Gauge, Cpu, Terminal, List, FileText, FlaskConical, Settings } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import BenchmarkPanel from './BenchmarkPanel';
@@ -6,6 +6,7 @@ import Select from './Select';
 
 function Card({ s, onClick }: { s: any; onClick: () => void }) {
   const ts = new Date(s.timestamp);
+  const failed = s.status_code >= 400;
   return (
     <div
       onClick={onClick}
@@ -15,8 +16,9 @@ function Card({ s, onClick }: { s: any; onClick: () => void }) {
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-[#FF00FF]/60">#{s.id}</span>
           <span className="text-xs font-mono bg-[#151C2E] px-2 py-0.5 rounded text-[#FF00FF]">{s.model_endpoint}</span>
+          {s.model && <span className="text-xs font-mono text-[#00FFA3] truncate max-w-[12rem]" title={s.model}>{s.model}</span>}
         </div>
-        <span className="text-[9px] font-mono text-[#7B8AA0]/60">{ts.toLocaleTimeString()}</span>
+        <span className={`text-[9px] font-mono ${failed ? 'text-red-400' : 'text-[#7B8AA0]/60'}`}>{failed ? `HTTP ${s.status_code}` : ts.toLocaleTimeString()}</span>
       </div>
       <div className="text-[11px] text-[#7B8AA0] font-mono truncate mb-3">{(s.prompt || '').substring(0, 120)}{(s.prompt || '').length > 120 ? '...' : ''}</div>
       <div className="flex items-center gap-4 text-xs">
@@ -39,6 +41,7 @@ function Card({ s, onClick }: { s: any; onClick: () => void }) {
         <span>{s.client_ip || 'unknown'}</span>
         <span>·</span>
         <span>{s.duration_ms >= 1000 ? (s.duration_ms / 1000).toFixed(1) + 's' : s.duration_ms + 'ms'}</span>
+        {s.token_source && <><span>·</span><span>{s.token_source}</span></>}
       </div>
     </div>
   );
@@ -141,7 +144,7 @@ function DetailModal({ id, onClose }: { id: number; onClose: () => void }) {
               </div>
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Model</div>
-                <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.model_endpoint}</div>
+                <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.model || 'unknown'}</div>
               </div>
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Duration</div>
@@ -150,6 +153,11 @@ function DetailModal({ id, onClose }: { id: number; onClose: () => void }) {
               <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Client IP</div>
                 <div className="text-lg font-bold text-[#F8FAFC] font-mono text-sm truncate">{data.client_ip || 'unknown'}</div>
+              </div>
+              <div className="rounded-2xl bg-[#05070D] border border-[#222B3D]/60 p-4">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-[#7B8AA0] mb-1">Outcome</div>
+                <div className={`text-lg font-bold font-mono ${data.status_code >= 400 ? 'text-red-400' : 'text-[#00FFA3]'}`}>{data.status_code || 'unknown'}</div>
+                <div className="text-[9px] text-[#7B8AA0] mt-1">{data.token_source || 'estimate'}</div>
               </div>
             </div>
 
@@ -259,6 +267,12 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [activeProviderURL, setActiveProviderURL] = useState<string>('');
   const [filterEndpoint, setFilterEndpoint] = useState<string>('');
+  const [filterModel, setFilterModel] = useState<string>('');
+  const [filterSearch, setFilterSearch] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<string>('');
+  const [requestStats, setRequestStats] = useState<any[]>([]);
+  const requestFiltersRef = useRef({ filterEndpoint, filterModel, filterSearch, filterStatus });
+  requestFiltersRef.current = { filterEndpoint, filterModel, filterSearch, filterStatus };
 
   const [providerName, setProviderName] = useState('');
   const [providerProtocol, setProviderProtocol] = useState<'http' | 'https'>('http');
@@ -291,6 +305,9 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [detailId, setDetailId] = useState<number | null>(null);
+
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
 
   const fetchData = async () => {
     try {
@@ -326,11 +343,32 @@ export default function App() {
     }
   };
 
+  const fetchRequestStats = async () => {
+    const { filterEndpoint, filterModel, filterSearch, filterStatus } = requestFiltersRef.current;
+    const params = new URLSearchParams();
+    if (filterEndpoint) params.set('endpoint', filterEndpoint);
+    if (filterModel) params.set('model', filterModel);
+    if (filterSearch.trim()) params.set('search', filterSearch.trim());
+    if (filterStatus) params.set('status', filterStatus);
+    try {
+      const res = await fetch(`/api/dashboard/stats?${params.toString()}`);
+      if (res.ok) setRequestStats((await res.json()).benchmarks || []);
+    } catch {}
+  };
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
+    const tick = () => {
+      fetchData();
+      if (activeTabRef.current === 'requests') fetchRequestStats();
+    };
+    tick();
+    const interval = setInterval(tick, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'requests') fetchRequestStats();
+  }, [activeTab, filterEndpoint, filterModel, filterSearch, filterStatus]);
 
   useEffect(() => {
     if (!selectedModel && models.length > 0) {
@@ -436,6 +474,8 @@ export default function App() {
     return true;
   });
 
+  const displayStats = activeTab === 'requests' ? requestStats : filteredStats;
+
   const recentStats = filteredStats.slice(0, 6);
 
   const onlineCount = providers.filter((p) => p.status === 'online').length;
@@ -453,6 +493,22 @@ export default function App() {
   }));
 
   const uniqueEndpoints = Array.from(new Set(stats.map((s) => s.model_endpoint).filter(Boolean)));
+  const uniqueRequestModels = Array.from(new Set(stats.map((s) => s.model).filter(Boolean)));
+
+  const exportRequests = () => {
+    const header = ['id', 'timestamp', 'model', 'endpoint', 'status_code', 'tps', 'ttft_ms', 'tokens', 'duration_ms', 'client_ip'];
+    const rows = displayStats.map((s) => [
+      s.id, s.timestamp, s.model || '', s.model_endpoint || '', s.status_code || '',
+      s.tps ?? '', s.ttft_ns ? (s.ttft_ns / 1_000_000).toFixed(1) : '', s.total_tokens ?? '', s.duration_ms ?? '', s.client_ip || '',
+    ]);
+    const csv = [header, ...rows].map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'llm-requests.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   function KPI({ title, value, icon }: { title: string; value: string | number; icon: React.ReactNode }) {
     return (
@@ -669,8 +725,38 @@ export default function App() {
                     placeholder="All Endpoints"
                   />
                 </div>
+                <div className="w-44">
+                  <Select
+                    value={filterModel}
+                    onChange={setFilterModel}
+                    options={[
+                      { value: '', label: 'All Models' },
+                      ...uniqueRequestModels.map((model) => ({ value: model, label: model })),
+                    ]}
+                    placeholder="All Models"
+                  />
+                </div>
+                <div className="w-32">
+                  <Select
+                    value={filterStatus}
+                    onChange={setFilterStatus}
+                    options={[
+                      { value: '', label: 'All Outcomes' },
+                      { value: 'success', label: 'Success' },
+                      { value: 'error', label: 'Errors' },
+                    ]}
+                    placeholder="All Outcomes"
+                  />
+                </div>
+                <input
+                  type="search"
+                  value={filterSearch}
+                  onChange={(e) => setFilterSearch(e.target.value)}
+                  placeholder="Search prompt, model, endpoint"
+                  className="w-64 bg-[#0E1320] border border-[#222B3D] rounded-lg px-3 py-2 text-[10px] font-mono text-[#F8FAFC] placeholder:text-[#7B8AA0]/50"
+                />
                 <button
-                  onClick={fetchData}
+                  onClick={() => { fetchData(); fetchRequestStats(); }}
                   className="p-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[#7B8AA0] hover:text-[#F8FAFC] hover:border-[#FF00FF]/50 transition-all duration-200 active:scale-95"
                   title="Refresh"
                 >
@@ -678,17 +764,24 @@ export default function App() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
                 </button>
+                <button
+                  onClick={exportRequests}
+                  disabled={displayStats.length === 0}
+                  className="px-3 py-2 rounded-lg bg-[#0E1320] border border-[#222B3D] text-[10px] font-mono text-[#7B8AA0] hover:text-[#F8FAFC] disabled:opacity-30"
+                >
+                  Export CSV
+                </button>
               </div>
             </div>
 
-            {filteredStats.length === 0 ? (
+            {displayStats.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-[#7B8AA0]">
                 <List className="w-10 h-10 animate-pulse mb-4 opacity-50" />
                 <p className="text-xs font-mono">Waiting for incoming traffic...</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {filteredStats.map((s) => (
+                {displayStats.map((s) => (
                   <Card key={s.id} s={s} onClick={() => setDetailId(s.id)} />
                 ))}
               </div>

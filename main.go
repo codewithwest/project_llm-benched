@@ -81,6 +81,8 @@ func main() {
 		}
 	})
 
+	mux.HandleFunc("GET /healthz", dashboardAPI.HandleHealth)
+
 	// 2. Prometheus /metrics endpoint
 	mux.Handle("GET /metrics", api.GlobalMetrics)
 
@@ -118,7 +120,7 @@ func main() {
 			uiServer.ServeHTTP(w, r)
 			return
 		}
-		
+
 		// Otherwise, it acts as a transparent proxy for ALL other requests (which passes them to Ollama/llama.cpp)
 		transparentProxy.ServeHTTP(w, r)
 	})

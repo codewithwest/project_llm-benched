@@ -16,9 +16,11 @@ import (
 	"llm-benchmarker/internal/db"
 )
 
+const maxCapturedBodyBytes = 10 << 20
+
 type TransparentProxy struct {
-	TargetURL *url.URL
-	DB        *db.Database
+	TargetURL    *url.URL
+	DB           *db.Database
 	ReverseProxy *httputil.ReverseProxy
 }
 
@@ -39,13 +41,15 @@ func NewTransparentProxy(targetURL string, database *db.Database) (*TransparentP
 
 type trackingResponseWriter struct {
 	http.ResponseWriter
-	startTime          time.Time
-	firstTokenTime     time.Time
-	streamTokenCount   int
-	wordTokenCount     int
-	responseBytes      int
-	isInterceptTarget  bool
-	responseBody       bytes.Buffer
+	startTime         time.Time
+	firstTokenTime    time.Time
+	streamTokenCount  int
+	wordTokenCount    int
+	responseBytes     int
+	isInterceptTarget bool
+	responseBody      bytes.Buffer
+	statusCode        int
+	errorMessage      string
 }
 
 func (w *trackingResponseWriter) tokenCount() int {
@@ -56,6 +60,9 @@ func (w *trackingResponseWriter) tokenCount() int {
 }
 
 func (w *trackingResponseWriter) Write(b []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.isInterceptTarget && w.firstTokenTime.IsZero() {
 		w.firstTokenTime = time.Now()
 	}
@@ -64,10 +71,34 @@ func (w *trackingResponseWriter) Write(b []byte) (int, error) {
 		w.streamTokenCount += bytes.Count(b, []byte("\n"))
 		w.wordTokenCount += bytes.Count(b, []byte(" "))
 		w.responseBytes += len(b)
-		w.responseBody.Write(b)
+		capture := b
+		if w.responseBody.Len() < maxCapturedBodyBytes {
+			remaining := maxCapturedBodyBytes - w.responseBody.Len()
+			if len(capture) > remaining {
+				capture = capture[:remaining]
+			}
+			w.responseBody.Write(capture)
+		}
 	}
 
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *trackingResponseWriter) WriteHeader(code int) {
+	if w.statusCode != 0 {
+		return
+	}
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *trackingResponseWriter) Flush() {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +117,10 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var isStream bool
 	var rawRequestBody string
 	if isTarget && r.Body != nil {
+		if r.ContentLength > maxCapturedBodyBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		r.Body.Close()
 		if err == nil {
@@ -108,10 +143,14 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		startTime:         time.Now(),
 		isInterceptTarget: isTarget,
 	}
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		tracker.errorMessage = err.Error()
+		http.Error(w, "upstream request failed", http.StatusBadGateway)
+	}
 
 	rp.ServeHTTP(tracker, r)
 
-	if isTarget && tracker.tokenCount() > 0 {
+	if isTarget {
 		endTime := time.Now()
 		elapsed := endTime.Sub(tracker.startTime)
 
@@ -123,6 +162,16 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tps := 0.0
 		if elapsed.Seconds() > 0 {
 			tps = float64(tracker.tokenCount()) / elapsed.Seconds()
+		}
+		if tracker.statusCode == 0 {
+			tracker.statusCode = http.StatusOK
+		}
+		if tracker.statusCode >= http.StatusBadRequest && tracker.errorMessage == "" {
+			tracker.errorMessage = http.StatusText(tracker.statusCode)
+		}
+		tokenSource := "estimate"
+		if isStream {
+			tokenSource = "stream-chunks"
 		}
 
 		clientIP := r.Header.Get("X-Forwarded-For")
@@ -137,11 +186,15 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("← %s | %d tokens | %.2f TPS | TTFT: %dms | model: %s | IP: %s | %dms",
 			r.URL.Path, tracker.tokenCount(), tps, ttftNs/1_000_000, modelName, clientIP, elapsed.Milliseconds())
 
-		err := p.DB.SaveBenchmark(
+		err := p.DB.SaveBenchmarkWithMetadata(
 			prompt,
 			r.URL.Path,
+			modelName,
 			targetHost.String(),
 			clientIP,
+			tracker.statusCode,
+			tracker.errorMessage,
+			tokenSource,
 			tps,
 			ttftNs,
 			0,
@@ -157,8 +210,6 @@ func (p *TransparentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		api.GlobalMetrics.Record(modelName, tracker.tokenCount(), tps, ttftNs, elapsed.Milliseconds())
-	} else if isTarget {
-		log.Printf("← %s | 0 tokens (non-streaming or empty response)", r.URL.Path)
 	}
 }
 

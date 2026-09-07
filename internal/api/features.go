@@ -6,15 +6,35 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
 	"llm-benchmarker/internal/db"
 )
 
+func replayTargetURL(providerURL, endpoint string) (string, error) {
+	provider, err := url.Parse(providerURL)
+	if err != nil {
+		return "", err
+	}
+	if endpoint == "" {
+		return provider.String(), nil
+	}
+	path, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	provider.Path = path.Path
+	provider.RawPath = path.RawPath
+	provider.RawQuery = path.RawQuery
+	provider.Fragment = ""
+	return provider.String(), nil
+}
+
 type FeaturesHandler struct {
-	DB      *db.Database
-	Runner  *BenchmarkHandler
+	DB     *db.Database
+	Runner *BenchmarkHandler
 }
 
 // ── Sessions ──
@@ -44,21 +64,36 @@ func (h *FeaturesHandler) HandleReplay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "benchmark not found or no request body", http.StatusNotFound)
 		return
 	}
+	allowed, err := h.DB.HasProviderURL(b.ProviderURL)
+	if err != nil || !allowed {
+		http.Error(w, "replay target is not a registered provider", http.StatusForbidden)
+		return
+	}
+	targetURL, err := replayTargetURL(b.ProviderURL, b.ModelEndpoint)
+	if err != nil {
+		http.Error(w, "invalid replay target", http.StatusInternalServerError)
+		return
+	}
 
 	client := &http.Client{Timeout: 300 * time.Second}
-	resp, err := client.Post(b.ProviderURL, "application/json", bytes.NewReader([]byte(b.RequestBody)))
+	resp, err := client.Post(targetURL, "application/json", bytes.NewReader([]byte(b.RequestBody)))
 	if err != nil {
 		http.Error(w, "replay request failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		http.Error(w, "failed to read replay response", http.StatusBadGateway)
+		return
+	}
 
 	result := map[string]interface{}{
 		"status":   resp.StatusCode,
 		"body":     string(body),
-		"model":    b.ModelEndpoint,
+		"model":    b.Model,
+		"endpoint": b.ModelEndpoint,
 		"provider": b.ProviderURL,
 	}
 

@@ -21,8 +21,26 @@ func NewDashboardHandler(database *db.Database, targetURL string) *DashboardHand
 	}
 }
 
+func (h *DashboardHandler) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func (h *DashboardHandler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
-	benchmarks, err := h.DB.GetBenchmarks()
+	benchmarks, err := h.DB.GetFilteredBenchmarks(
+		r.URL.Query().Get("provider"),
+		r.URL.Query().Get("endpoint"),
+		r.URL.Query().Get("model"),
+		r.URL.Query().Get("from"),
+		r.URL.Query().Get("to"),
+		r.URL.Query().Get("search"),
+		r.URL.Query().Get("status"),
+	)
 	if err != nil {
 		http.Error(w, "Failed to get benchmarks", http.StatusInternalServerError)
 		return
@@ -124,11 +142,11 @@ func (h *DashboardHandler) HandleAddProvider(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "Invalid body", http.StatusBadRequest)
 		return
 	}
-	
+
 	if err := h.DB.AddProvider(p.Name, p.URL); err != nil {
 		http.Error(w, "Failed to add provider", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusCreated)
 }
